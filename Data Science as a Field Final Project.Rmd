@@ -1,0 +1,172 @@
+---
+title: "Data Science as a Field Final Project"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-03-06"
+---
+# Goal
+My goal with this project is to answer two main things:
+  - Generally speaking, how has COVID's deadliness changed with time? 
+  - A Gompertz function is a function known in biology for fitting well to exponential data that eventually stagnates (https://en.wikipedia.org/wiki/Gompertz_function). Does a Gropertz model fit well to the COVID-19 cases and death data?
+
+
+```{r}
+library(tidyverse)
+library(stats)
+library(ggplot2)
+library(dplyr)
+```
+# Importing the Data
+The data used in this project is the John Hopkins University COVID-19 time series data available through their github site, namely the two focusing on _TOTAL_ global cases, and _TOTAL_ global deaths, "time_series_covid19_confirmed_global.csv", and "time_series_covid19_deaths_global.csv".
+
+The dataset focusing on the global victims of COVID who have recovered is not being used, since data stopped being collected for it mid-2021. 
+
+```{r}
+url1 <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
+url2 <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+
+
+
+global_cases <- read.csv(url1)
+global_deaths <- read.csv(url2)
+```
+# Cleaning the Data
+
+```{r}
+#repurposes what was used in lecture with some slight adjustments
+global_cases <- global_cases %>% pivot_longer(cols = 
+                                                -c("Province.State",
+                                                   "Country.Region",
+                                                   "Lat",
+                                                   "Long"),
+                                                names_to = "date",
+                                                values_to = "cases",
+                                                names_prefix = "X") %>% 
+                                                select(-c("Lat","Long"))
+
+global_deaths <- global_deaths %>% pivot_longer(cols = 
+                                                -c("Province.State",
+                                                   "Country.Region",
+                                                   "Lat",
+                                                   "Long"),
+                                                names_to = "date",
+                                                values_to = "deaths",
+                                                names_prefix = "X") %>% 
+                                                select(-c("Lat","Long"))
+
+#proper conversion into date time datatype
+global_cases$date <- as.Date(global_cases$date, format = "%m.%d.%y")
+global_deaths$date <- as.Date(global_deaths$date, format = "%m.%d.%y")
+
+```
+
+# Visualizing Cases and Deaths
+
+For the sake of improving the visualization of intra-year trends, a rolling average has been implemented such that each month's worth of data only has a single corresponding point. Also, since I am focused on a global trend, the cases shown will be the world-country average.
+
+```{r}
+#
+
+#create month entry in dataframe
+global_cases <- mutate(global_cases, month = format(date, "%Y-%m"))
+global_deaths <- mutate(global_deaths, month = format(date, "%Y-%m"))
+
+#create monthly average over all countries
+monthly_cases <- global_cases %>%
+  group_by(month) %>%
+  summarize(average_cases = mean(cases))
+
+monthly_deaths <- global_deaths %>%
+  group_by(month) %>%
+  summarize(average_deaths = mean(deaths))
+
+# add column with convenient month entry
+monthly_cases <- mutate(monthly_cases,month_num = as.Date(paste(month, "01", sep = '-')))
+monthly_deaths <- mutate(monthly_deaths,month_num = as.Date(paste(month, "01", sep = '-')))
+
+
+
+```
+Below is a plot of the average COVID-19 cases per country by month in red, and the average COVID-19 deaths per country
+
+```{r}
+
+ggplot() + 
+  xlab("years")+
+  ylab("Total, world-country average")+
+  geom_line(data = monthly_cases, aes(x = month_num,y = average_cases, 
+                                       color = "AVG cases per country"),size = 1.2) +
+  geom_line(data = monthly_deaths, aes(x = month_num,y = average_deaths, 
+                                       color = "AVG deaths per country"),size = 1.2)
+```
+The size of the average deaths per country is not visible in this plot, so it is plotted separately below. 
+
+```{r}
+ggplot() + 
+  xlab("year")+
+  ylab("total deaths, world-country average")+
+  geom_line(data = monthly_deaths, aes(x = month_num,y = average_deaths),size = 1.2)
+```
+Based on the above, although there are still people dying due to COVID, it appears to be slowing down. Let's visualize it to see by how much it's slowed down by.
+
+```{r}
+monthly_deaths$deaths_increase <- c(NA, diff(monthly_deaths$average_deaths))
+ggplot() + 
+  xlab("year")+
+  ylab("increase in deaths, world-country averaged")+
+  geom_line(data = monthly_deaths, aes(x = month_num,y = deaths_increase),size = 1.2)
+```
+Based on the above plot, COVID-19's death rate per month has been getting a lot better as of the past half year. This seems to be in stark contrast to the number of cases, which although slowing down, still seemed to be going strong. Let's take a ratio between the two to visualize the number of deaths per 100 COVID-19 cases. 
+
+
+```{r}
+monthly_cases <- mutate(monthly_cases,ratio = monthly_deaths$average_deaths/average_cases)
+
+ggplot() + 
+  ylab("deaths per 100 cases, world-country average")+
+  xlab("year")+
+  geom_line(data = monthly_cases, aes(x = month_num,y = ratio*100),size = 1.2) 
+```
+It seems like the average deaths per 100 cases has also drastically decreased over time, which would make sense. If the death rate is already lowering despite an increase in cases, it's only natural that the average death per 100 cases would go down as well. 
+
+Now that it has been confirmed through multiple metrics that COVID-19's deadliness has decreased over time, let's make a model for both the using the Gompertz function, since the growth of both new cases and new deaths seems to be stagnating and it looks like it'd be a good fit.
+
+
+```{r}
+#the model for total cases
+#the nls function is for finding the nonlinear least squares fit of a given model
+model_cases <- nls(cases ~ a*exp(-b*exp(-c*as.numeric(date - min(date)))), 
+             data = global_cases, start = list(a = max(global_cases$cases)
+                                                , b = 1, c = 0.1))
+
+#the model for total deaths
+model_deaths <- nls(deaths ~ a*exp(-b*exp(-c*as.numeric(date - min(date)))), 
+             data = global_deaths, start = list(a = max(global_deaths$deaths)
+                                                , b = 1, c = 0.1))
+```
+
+Testing the total cases model
+
+```{r}
+summary(model_cases)
+
+```
+Testing the total deaths model
+
+```{r}
+summary(model_deaths)
+```
+It appears that the Gompertz models fit the data quite well, considering that the P-values provided by R for each parameter comes out as 2e-16, which suggests that all parameters for the model are very statistically significant, and that the function seems to fit both data sets well as models.
+
+# Conclusion and sources of Bias
+Generally I think that this exploratory data analysis was able to answer the questions I posed quite well. Multiple different plots were able to suggest that the deadliness of COVID-19 has lessened over time, shown by the decreasing world-country average death rate, and the steadily decreasing number of deaths per 100 cases. As for the Gomphertz function fitting to the data, it was able to fit quite well to the total cases data, and the total deaths data, with statistical tests showing each parameter within them being very significant.
+
+One major potential source of bias for this dataset and analysis is a lack of information regarding country population. A lack of population information allows for very large countries like India or China to influence the dataset heavily while smaller countries barely have any effect whatsoever. One other major source of bias is the differences in reporting that can happen from country to country, since it is left up to countries to self-report. Countries can choose to skew or stifle their COVID-19 numbers for a number of political reasons, and there are other countries that simply lack the infrastructure necessary to gather accurate reports.
+
+
+
+
+
+
+
